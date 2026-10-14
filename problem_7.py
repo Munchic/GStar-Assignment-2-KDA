@@ -1,0 +1,348 @@
+"""Problem 7: Gated DeltaNet (forward only).
+
+Scalar log gates decay the state before prediction.
+Apply scalar relative decay to the strict WY matrix and inclusive output scores.
+Reuse the P6 triangular inverse; never scale the WY matrix by query scale.
+See the matching handout section for derivation, points, and checks.
+Delete each tl.static_assert only when you implement its TODO.
+"""
+
+import torch
+import triton
+import triton.language as tl
+
+from common import (
+    CHUNK_SIZE,
+    BLOCK_K,
+    BLOCK_V,
+    SUB_CHUNK,
+    INVERSE_BLOCK,
+    tile_ptrs,
+    prepare,
+    pad_sequence,
+    allocate_states,
+    finish,
+)
+
+
+@triton.jit
+def _recurrent_forward(
+    Q, K, V, Gate, Beta, Out, InitialState, FinalState,
+    scale: tl.constexpr, seq_len,
+    HEAD_DIM: tl.constexpr, VALUE_DIM: tl.constexpr, BLOCK_V: tl.constexpr,
+):
+    value_block = tl.program_id(0)
+    batch_head = tl.program_id(1)
+    key_offsets = tl.arange(0, HEAD_DIM)
+    value_offsets = value_block * BLOCK_V + tl.arange(0, BLOCK_V)
+
+    q_ptrs = Q + batch_head * seq_len * HEAD_DIM + key_offsets
+    k_ptrs = K + batch_head * seq_len * HEAD_DIM + key_offsets
+    v_ptrs = V + batch_head * seq_len * VALUE_DIM + value_offsets
+    gate_ptrs = Gate + batch_head * seq_len
+    beta_ptrs = Beta + batch_head * seq_len
+    out_ptrs = Out + batch_head * seq_len * VALUE_DIM + value_offsets
+
+    state = tl.load(tile_ptrs(InitialState, batch_head * HEAD_DIM, key_offsets, value_offsets, VALUE_DIM))
+
+    for t in range(seq_len):
+        q = tl.load(q_ptrs + t * HEAD_DIM).to(tl.float32) * scale
+        k = tl.load(k_ptrs + t * HEAD_DIM).to(tl.float32)
+        v = tl.load(v_ptrs + t * VALUE_DIM).to(tl.float32)
+        gate = tl.load(gate_ptrs + t).to(tl.float32)
+        beta = tl.load(beta_ptrs + t).to(tl.float32)
+
+        # --- STUDENT IMPLEMENTATION REQUIRED: P7.RECURRENT.DECAY ---
+        # Apply scalar forgetting BEFORE prediction.
+        # TODO: replace this assertion with your implementation.
+        tl.static_assert(False, "P7.RECURRENT.DECAY: implement this subpart")
+        # --- END OF STUDENT IMPLEMENTATION ---
+
+        # --- STUDENT IMPLEMENTATION REQUIRED: P7.RECURRENT.RESIDUAL ---
+        # Set error [BLOCK_V] using the decayed previous state.
+        # TODO: replace this assertion with your implementation.
+        tl.static_assert(False, "P7.RECURRENT.RESIDUAL: implement this subpart")
+        # --- END OF STUDENT IMPLEMENTATION ---
+
+        # --- STUDENT IMPLEMENTATION REQUIRED: P7.RECURRENT.WRITE ---
+        # Apply the beta-weighted rank-one correction.
+        # TODO: replace this assertion with your implementation.
+        tl.static_assert(False, "P7.RECURRENT.WRITE: implement this subpart")
+        # --- END OF STUDENT IMPLEMENTATION ---
+
+        # --- STUDENT IMPLEMENTATION REQUIRED: P7.RECURRENT.READ ---
+        # Set out using the updated state.
+        # TODO: replace this assertion with your implementation.
+        tl.static_assert(False, "P7.RECURRENT.READ: implement this subpart")
+        # --- END OF STUDENT IMPLEMENTATION ---
+
+        tl.store(out_ptrs + t * VALUE_DIM, out.to(Out.dtype.element_ty))
+
+    tl.store(tile_ptrs(FinalState, batch_head * HEAD_DIM, key_offsets, value_offsets, VALUE_DIM), state)
+
+
+@triton.jit
+def _chunk_wy_representation(
+    K, V, Gate, Beta, W, U, A,
+    seq_len,
+    HEAD_DIM: tl.constexpr, VALUE_DIM: tl.constexpr, CHUNK: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_V: tl.constexpr,
+):
+    chunk = tl.program_id(0)
+    batch_head = tl.program_id(1)
+    chunk_offsets = tl.arange(0, CHUNK)
+    rows = chunk * CHUNK + chunk_offsets
+    beta = tl.load(Beta + batch_head * seq_len + rows).to(tl.float32)
+
+    # --- STUDENT IMPLEMENTATION REQUIRED: P7.WY.GATES ---
+    # Load scalar log gates; set inclusive gate_cumsum [C] and strictly causal decay [C,C]. Mask differences before exp.
+    # TODO: replace this assertion with your implementation.
+    tl.static_assert(False, "P7.WY.GATES: implement this subpart")
+    # --- END OF STUDENT IMPLEMENTATION ---
+
+    # L = tril(diag(beta) (K K^T ⊙ decay), -1)
+    lower = tl.zeros([CHUNK, CHUNK], tl.float32)
+
+    for key_block in range(HEAD_DIM // BLOCK_K):
+        key_offsets = key_block * BLOCK_K + tl.arange(0, BLOCK_K)
+        k = tl.load(tile_ptrs(K, batch_head * seq_len, rows, key_offsets, HEAD_DIM))
+
+        # --- STUDENT IMPLEMENTATION REQUIRED: P7.WY.GRAM ---
+        # Accumulate beta-weighted key Gram matrix across key tiles.
+        # TODO: replace this assertion with your implementation.
+        tl.static_assert(False, "P7.WY.GRAM: implement this subpart")
+        # --- END OF STUDENT IMPLEMENTATION ---
+
+    # --- STUDENT IMPLEMENTATION REQUIRED: P7.WY.STRICT ---
+    # Finish L with STRICT causality and relative scalar decay.
+    # TODO: replace this assertion with your implementation.
+    tl.static_assert(False, "P7.WY.STRICT: implement this subpart")
+    # --- END OF STUDENT IMPLEMENTATION ---
+
+    # A = (I + L)^{-1} for the strictly lower triangular L
+    inverse = triangular_inverse(lower, CHUNK)
+
+    tl.store(tile_ptrs(A, batch_head * seq_len, rows, chunk_offsets, CHUNK), inverse)
+
+    for key_block in range(HEAD_DIM // BLOCK_K):
+        key_offsets = key_block * BLOCK_K + tl.arange(0, BLOCK_K)
+        k = tl.load(tile_ptrs(K, batch_head * seq_len, rows, key_offsets, HEAD_DIM))
+
+        # --- STUDENT IMPLEMENTATION REQUIRED: P7.WY.W ---
+        # Set w [C,BLOCK_K] using A and beta-weighted entry-decayed keys.
+        # TODO: replace this assertion with your implementation.
+        tl.static_assert(False, "P7.WY.W: implement this subpart")
+        # --- END OF STUDENT IMPLEMENTATION ---
+
+        tl.store(tile_ptrs(W, batch_head * seq_len, rows, key_offsets, HEAD_DIM), w.to(W.dtype.element_ty))
+
+    for value_block in range(VALUE_DIM // BLOCK_V):
+        value_offsets = value_block * BLOCK_V + tl.arange(0, BLOCK_V)
+        v = tl.load(tile_ptrs(V, batch_head * seq_len, rows, value_offsets, VALUE_DIM))
+
+        # --- STUDENT IMPLEMENTATION REQUIRED: P7.WY.U ---
+        # Set u [C,BLOCK_V] using A and beta-weighted values.
+        # TODO: replace this assertion with your implementation.
+        tl.static_assert(False, "P7.WY.U: implement this subpart")
+        # --- END OF STUDENT IMPLEMENTATION ---
+
+        tl.store(tile_ptrs(U, batch_head * seq_len, rows, value_offsets, VALUE_DIM), u.to(U.dtype.element_ty))
+
+
+@triton.jit
+def _chunk_state_forward(
+    K, W, U, Gate, States, PseudoValues,
+    seq_len, num_chunks,
+    HEAD_DIM: tl.constexpr, VALUE_DIM: tl.constexpr, CHUNK: tl.constexpr, BLOCK_V: tl.constexpr,
+):
+    value_block = tl.program_id(0)
+    batch_head = tl.program_id(1)
+    key_offsets = tl.arange(0, HEAD_DIM)
+    value_offsets = value_block * BLOCK_V + tl.arange(0, BLOCK_V)
+    chunk_offsets = tl.arange(0, CHUNK)
+
+    # States[b, h, i] is the state entering chunk i; States[b, h, 0] holds the initial state on entry
+    state_row_base = batch_head * (num_chunks + 1) * HEAD_DIM
+    state = tl.load(tile_ptrs(States, state_row_base, key_offsets, value_offsets, VALUE_DIM))
+
+    for chunk in range(num_chunks):
+        rows = chunk * CHUNK + chunk_offsets
+        gate = tl.load(Gate + batch_head * seq_len + rows).to(tl.float32)
+
+        # --- STUDENT IMPLEMENTATION REQUIRED: P7.STATE.PREFIX ---
+        # Set inclusive gate_cumsum [C] and scalar chunk_decay.
+        # TODO: replace this assertion with your implementation.
+        tl.static_assert(False, "P7.STATE.PREFIX: implement this subpart")
+        # --- END OF STUDENT IMPLEMENTATION ---
+
+        k = tl.load(tile_ptrs(K, batch_head * seq_len, rows, key_offsets, HEAD_DIM))
+        w = tl.load(tile_ptrs(W, batch_head * seq_len, rows, key_offsets, HEAD_DIM))
+        u = tl.load(tile_ptrs(U, batch_head * seq_len, rows, value_offsets, VALUE_DIM))
+
+        # --- STUDENT IMPLEMENTATION REQUIRED: P7.STATE.PSEUDO ---
+        # Set pseudo_values [C,BLOCK_V] from u, w and the entry state.
+        # TODO: replace this assertion with your implementation.
+        tl.static_assert(False, "P7.STATE.PSEUDO: implement this subpart")
+        # --- END OF STUDENT IMPLEMENTATION ---
+
+        tl.store(tile_ptrs(PseudoValues, batch_head * seq_len, rows, value_offsets, VALUE_DIM), pseudo_values.to(PseudoValues.dtype.element_ty))
+
+        # --- STUDENT IMPLEMENTATION REQUIRED: P7.STATE.UPDATE ---
+        # Decay entry state and add exit-decayed corrected writes.
+        # TODO: replace this assertion with your implementation.
+        tl.static_assert(False, "P7.STATE.UPDATE: implement this subpart")
+        # --- END OF STUDENT IMPLEMENTATION ---
+
+        tl.store(tile_ptrs(States, state_row_base + (chunk + 1) * HEAD_DIM, key_offsets, value_offsets, VALUE_DIM), state)
+
+
+@triton.jit
+def _chunk_output_forward(
+    Q, K, Gate, PseudoValues, States, Out,
+    scale: tl.constexpr, seq_len, num_chunks,
+    HEAD_DIM: tl.constexpr, VALUE_DIM: tl.constexpr, CHUNK: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_V: tl.constexpr,
+):
+    chunk = tl.program_id(0)
+    value_block = tl.program_id(1)
+    batch_head = tl.program_id(2)
+    chunk_offsets = tl.arange(0, CHUNK)
+    rows = chunk * CHUNK + chunk_offsets
+    value_offsets = value_block * BLOCK_V + tl.arange(0, BLOCK_V)
+    state_row_base = (batch_head * (num_chunks + 1) + chunk) * HEAD_DIM
+
+    # --- STUDENT IMPLEMENTATION REQUIRED: P7.OUTPUT.GATES ---
+    # Set chunk-local prefixes and INCLUSIVE relative decay; mask before exponentiation.
+    # TODO: replace this assertion with your implementation.
+    tl.static_assert(False, "P7.OUTPUT.GATES: implement this subpart")
+    # --- END OF STUDENT IMPLEMENTATION ---
+
+    pseudo_values = tl.load(tile_ptrs(PseudoValues, batch_head * seq_len, rows, value_offsets, VALUE_DIM))
+    inter = tl.zeros([CHUNK, BLOCK_V], tl.float32)
+    scores = tl.zeros([CHUNK, CHUNK], tl.float32)
+
+    for key_block in range(HEAD_DIM // BLOCK_K):
+        key_offsets = key_block * BLOCK_K + tl.arange(0, BLOCK_K)
+        q = tl.load(tile_ptrs(Q, batch_head * seq_len, rows, key_offsets, HEAD_DIM)) * scale
+        k = tl.load(tile_ptrs(K, batch_head * seq_len, rows, key_offsets, HEAD_DIM))
+        state = tl.load(tile_ptrs(States, state_row_base, key_offsets, value_offsets, VALUE_DIM))
+
+        # --- STUDENT IMPLEMENTATION REQUIRED: P7.OUTPUT.PRODUCTS ---
+        # Accumulate entry-decayed inter reads and un-gated local scores.
+        # TODO: replace this assertion with your implementation.
+        tl.static_assert(False, "P7.OUTPUT.PRODUCTS: implement this subpart")
+        # --- END OF STUDENT IMPLEMENTATION ---
+
+    # --- STUDENT IMPLEMENTATION REQUIRED: P7.OUTPUT.COMBINE ---
+    # Apply relative decay to scores; combine inter and corrected local writes.
+    # TODO: replace this assertion with your implementation.
+    tl.static_assert(False, "P7.OUTPUT.COMBINE: implement this subpart")
+    # --- END OF STUDENT IMPLEMENTATION ---
+
+    tl.store(tile_ptrs(Out, batch_head * seq_len, rows, value_offsets, VALUE_DIM), out.to(Out.dtype.element_ty))
+
+
+from problem_6 import triangular_inverse
+
+
+@torch.no_grad()
+def recurrent_gated_deltanet(
+    query,
+    key,
+    value,
+    gate,
+    beta,
+    scale=None,
+    initial_state=None,
+    output_final_state=False,
+):
+    query, key, value, scale, initial_state, gate, beta = prepare(
+        query, key, value, scale, initial_state, gate, beta,
+        gate_kind='scalar', cuda=True)
+
+    batch_size, num_heads, seq_len, head_dim = query.shape
+    value_dim = value.shape[-1]
+
+    out = torch.empty_like(value)
+    final_state = torch.empty_like(initial_state)
+
+    grid = (value_dim // BLOCK_V, batch_size * num_heads)
+    _recurrent_forward[grid](
+        query, key, value, gate, beta, out, initial_state, final_state, scale, seq_len,
+        HEAD_DIM=head_dim, VALUE_DIM=value_dim, BLOCK_V=BLOCK_V)
+
+    return finish(out, final_state, output_final_state)
+
+
+def _wy_representation(key, value, gate, beta):
+    batch_size, num_heads, seq_len, head_dim = key.shape
+    value_dim = value.shape[-1]
+    w, u = torch.empty_like(key), torch.empty_like(value)
+    inverse = torch.empty(batch_size, num_heads, seq_len, CHUNK_SIZE, device=key.device, dtype=torch.float32)
+
+    grid = (seq_len // CHUNK_SIZE, batch_size * num_heads)
+    _chunk_wy_representation[grid](
+        key, value, gate, beta, w, u, inverse, seq_len,
+        HEAD_DIM=head_dim, VALUE_DIM=value_dim, CHUNK=CHUNK_SIZE, BLOCK_K=BLOCK_K, BLOCK_V=BLOCK_V,
+    )
+
+    return w, u, inverse
+
+
+def _chunk_states(key, w, u, gate, initial_state):
+    batch_size, num_heads, seq_len, head_dim = key.shape
+    value_dim = u.shape[-1]
+    num_chunks = seq_len // CHUNK_SIZE
+    states = torch.empty(batch_size, num_heads, num_chunks + 1, head_dim, value_dim, device=key.device, dtype=torch.float32)
+    states[:, :, 0] = initial_state
+    pseudo_values = torch.empty_like(u)
+
+    grid = (value_dim // BLOCK_V, batch_size * num_heads)
+    _chunk_state_forward[grid](
+        key, w, u, gate, states, pseudo_values, seq_len, num_chunks,
+        HEAD_DIM=head_dim, VALUE_DIM=value_dim, CHUNK=CHUNK_SIZE, BLOCK_V=BLOCK_V,
+    )
+
+    return states, pseudo_values
+
+
+@torch.no_grad()
+def chunk_gated_deltanet(
+    query,
+    key,
+    value,
+    gate,
+    beta,
+    scale=None,
+    initial_state=None,
+    output_final_state=False,
+):
+    query, key, value, scale, initial_state, gate, beta = prepare(
+        query, key, value, scale, initial_state, gate, beta,
+        gate_kind='scalar', cuda=True)
+
+    seq_len = query.shape[2]
+    query, key, value = (pad_sequence(x, CHUNK_SIZE) for x in (query, key, value))
+    gate = pad_sequence(gate, CHUNK_SIZE)  # Zero log gate = identity decay.
+    beta = pad_sequence(beta, CHUNK_SIZE)  # Zero beta = no padded writes.
+
+    batch_size, num_heads, padded_len, head_dim = query.shape
+    value_dim = value.shape[-1]
+    num_chunks = padded_len // CHUNK_SIZE
+    kernel_args = dict(
+        HEAD_DIM=head_dim,
+        VALUE_DIM=value_dim,
+        CHUNK=CHUNK_SIZE,
+        BLOCK_K=BLOCK_K,
+        BLOCK_V=BLOCK_V,
+    )
+
+    w, u, inverse = _wy_representation(key, value, gate, beta)
+
+    states, pseudo_values = _chunk_states(key, w, u, gate, initial_state)
+
+    out = torch.empty_like(value)
+
+    grid = (num_chunks, value_dim // BLOCK_V, batch_size * num_heads)
+    _chunk_output_forward[grid](
+        query, key, gate, pseudo_values, states, out, scale, padded_len, num_chunks, **kernel_args)
+
+    return finish(out[:, :, :seq_len].contiguous(), states[:, :, -1].contiguous(), output_final_state)

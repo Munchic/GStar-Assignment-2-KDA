@@ -1,0 +1,5 @@
+# Initial dependency ranges, NOT a GPU-validated course lockfile.
+# Use Linux with a CUDA-capable NVIDIA GPU for Problems 2-9.
+# Python >=3.10. macOS/CPU can run Problem 1 only.
+torch>=2.2,<3
+triton>=3.0,<4; sys_platform == "linux"

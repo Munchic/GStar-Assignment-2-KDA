@@ -11,7 +11,7 @@ the masked arithmetic in PyTorch and Triton. Only the forward pass is required.
 ## Start here
 
 1. Read the [overview](docs/00_overview.pdf) or open the
-   [introduction slides](docs/slides/assignment_2_introduction.pptx).
+   [introduction slides](docs/slides/KDA-KimiK3.pdf).
 2. Follow Problems 1–9 in order, reading each PDF before editing its code.
 3. Implement the `STUDENT IMPLEMENTATION REQUIRED` regions and run the checker.
 

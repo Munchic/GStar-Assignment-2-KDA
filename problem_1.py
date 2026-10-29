@@ -71,4 +71,8 @@ def linear_chunk_student(query, key, value, scale=None, initial_state=None,
         state = state + k.transpose(-2, -1) @ v
         # --- END OF STUDENT IMPLEMENTATION ---
 
+        # problem 1.3: 
+        # tile is diag inclusive because each token needs to attend to itself (there's no separate diag pass)
+        # output must use state entering chunk to enable recurrence (s_t depending on s_t-1)
+
     return finish(out, state, output_final_state)

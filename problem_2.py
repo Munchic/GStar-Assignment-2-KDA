@@ -49,20 +49,21 @@ def _recurrent_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P2.RECURRENT.UPDATE ---
         # Update the [Dk, BLOCK_V] state with the current association.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P2.RECURRENT.UPDATE: implement this subpart")
+        # print(k.shape)
+        state += k[:, None] * v[None, :]
         # --- END OF STUDENT IMPLEMENTATION ---
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P2.RECURRENT.READ ---
         # Set out [BLOCK_V] by reducing the updated state over key channels.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P2.RECURRENT.READ: implement this subpart")
+        out = tl.sum(q[:, None] * state, axis=0)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(out_ptrs + t * VALUE_DIM, out.to(Out.dtype.element_ty))
 
     tl.store(tile_ptrs(FinalState, batch_head * HEAD_DIM, key_offsets, value_offsets, VALUE_DIM), state)
-
+    # problem 2.3
+    # distinct value tiles don't overlap bcs we use value_dim // BLOCK_V
+    # to chunk up and within each value, we reduce over the whote key axis
 
 @torch.no_grad()
 def recurrent_linear_attention(

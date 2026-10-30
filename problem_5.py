@@ -51,21 +51,24 @@ def _recurrent_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P5.RECURRENT.RESIDUAL ---
         # Set error [BLOCK_V] using the previous state.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P5.RECURRENT.RESIDUAL: implement this subpart")
+        v_pred = tl.sum(state * k[:, None], axis=0)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P5.RECURRENT.WRITE ---
         # Apply the beta-weighted rank-one correction.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P5.RECURRENT.WRITE: implement this subpart")
+        u = beta * (v - v_pred)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P5.RECURRENT.READ ---
         # Set out using the updated state.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P5.RECURRENT.READ: implement this subpart")
+        state += k[:, None] * u[None, :]
+        out = tl.sum(q[:, None] * state, axis=0) 
         # --- END OF STUDENT IMPLEMENTATION ---
+
+        # problem 5.3
+        # the normalized keys help deal with state accumulation in linear attention
+        # higher beta (closer to 1) means we keep more of the new value v_t (replace)
+        # lower beta (closer to 0) means we keep more of our old memory (retain)
 
         tl.store(out_ptrs + t * VALUE_DIM, out.to(Out.dtype.element_ty))
 

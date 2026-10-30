@@ -52,14 +52,12 @@ def _recurrent_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P4.RECURRENT.UPDATE ---
         # Decay rows of state with exp(gate), then add the association.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P4.RECURRENT.UPDATE: implement this subpart")
+        state = tl.exp(gate[:, None]) * state + k[:, None] * v[None, :]
         # --- END OF STUDENT IMPLEMENTATION ---
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P4.RECURRENT.READ ---
         # Read the updated state; q already includes scale.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P4.RECURRENT.READ: implement this subpart")
+        out = tl.sum(q[:, None] * state, axis=0)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(out_ptrs + t * VALUE_DIM, out.to(Out.dtype.element_ty))
@@ -79,7 +77,8 @@ def _chunk_cumsum(X, Out, seq_len, DIM: tl.constexpr, CHUNK: tl.constexpr, BLOCK
     # --- STUDENT IMPLEMENTATION REQUIRED: P4.SCAN.PREFIX ---
     # Compute the inclusive FP32 prefix along tokens and store it at the supplied pointers.
     # TODO: replace this assertion with your implementation.
-    tl.static_assert(False, "P4.SCAN.PREFIX: implement this subpart")
+    prefix = tl.cumsum(x, axis=0)
+    tl.store(tile_ptrs(Out, batch_head * seq_len, rows, cols, DIM), prefix)
     # --- END OF STUDENT IMPLEMENTATION ---
 
 
@@ -100,7 +99,7 @@ def _chunk_state_forward(
     state_row_base = batch_head * (num_chunks + 1) * HEAD_DIM
     state = tl.load(tile_ptrs(States, state_row_base, key_offsets, value_offsets, VALUE_DIM))
 
-    for chunk in range(num_chunks):
+    for chunk in tl.range(num_chunks, num_stages=1):
         rows = chunk * CHUNK + chunk_offsets
         k = tl.load(tile_ptrs(K, batch_head * seq_len, rows, key_offsets, HEAD_DIM))
         v = tl.load(tile_ptrs(V, batch_head * seq_len, rows, value_offsets, VALUE_DIM))
@@ -109,14 +108,12 @@ def _chunk_state_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P4.STATE.EXIT_KEYS ---
         # Set k_decayed [C,BLOCK_K], transforming writes to chunk exit.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P4.STATE.EXIT_KEYS: implement this subpart")
+        k_decayed = k * tl.exp(chunk_decay - gate_cumsum)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P4.STATE.UPDATE ---
         # Decay entry state and add exit-decayed associations.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P4.STATE.UPDATE: implement this subpart")
+        state = tl.exp(chunk_decay[:, None]) * state + tl.dot(k_decayed.trans(), v)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(States, state_row_base + (chunk + 1) * HEAD_DIM, key_offsets, value_offsets, VALUE_DIM), state)
@@ -141,11 +138,10 @@ def _chunk_output_forward(
 
     # --- STUDENT IMPLEMENTATION REQUIRED: P4.OUTPUT.LOCAL ---
     # Set out [C,BLOCK_V] from the supplied already-scaled local scores.
-    # TODO: replace this assertion with your implementation.
-    tl.static_assert(False, "P4.OUTPUT.LOCAL: implement this subpart")
+    out = tl.dot(scores, v)
     # --- END OF STUDENT IMPLEMENTATION ---
 
-    for key_block in range(HEAD_DIM // BLOCK_K):
+    for key_block in tl.range(HEAD_DIM // BLOCK_K, num_stages=1):
         key_offsets = key_block * BLOCK_K + tl.arange(0, BLOCK_K)
         q = tl.load(tile_ptrs(Q, batch_head * seq_len, rows, key_offsets, HEAD_DIM)) * scale
         gate_cumsum = tl.load(tile_ptrs(GateCumsum, batch_head * seq_len, rows, key_offsets, HEAD_DIM))
@@ -153,9 +149,12 @@ def _chunk_output_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P4.OUTPUT.ENTRY ---
         # Add the entry-state read, with per-channel entry decay.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P4.OUTPUT.ENTRY: implement this subpart")
+        out += tl.dot(q * tl.exp(gate_cumsum), state)
         # --- END OF STUDENT IMPLEMENTATION ---
+
+    # problem 4.4
+    # we decay along the key channel axis (Dk) bcs we row-wise shrink state, and S is [Dk, Dv]
+    # since o = S^T q then the resulting vector is [Dv] so we're collapsing Dk
 
     tl.store(tile_ptrs(Out, batch_head * seq_len, rows, value_offsets, VALUE_DIM), out.to(Out.dtype.element_ty))
 

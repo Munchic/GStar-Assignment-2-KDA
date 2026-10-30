@@ -49,8 +49,7 @@ def _chunk_state_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P3.STATE.UPDATE ---
         # Accumulate K.T @ V into the FP32 chunk boundary state.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P3.STATE.UPDATE: implement this subpart")
+        state += tl.dot(k.trans(), v)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(States, state_row_base + (chunk + 1) * HEAD_DIM, key_offsets, value_offsets, VALUE_DIM), state)
@@ -82,21 +81,26 @@ def _chunk_output_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P3.OUTPUT.PRODUCTS ---
         # Accumulate inter [C,BLOCK_V] and scores [C,C] across key tiles.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P3.OUTPUT.PRODUCTS: implement this subpart")
+        inter += tl.dot(q, state)
+        scores += tl.dot(q, k.trans())
         # --- END OF STUDENT IMPLEMENTATION ---
 
     # --- STUDENT IMPLEMENTATION REQUIRED: P3.OUTPUT.MASK ---
     # Apply an inclusive lower-triangular mask; masked scores are ZERO.
-    # TODO: replace this assertion with your implementation.
-    tl.static_assert(False, "P3.OUTPUT.MASK: implement this subpart")
+    local = tl.arange(0, CHUNK)
+    mask = local[:, None] >= local[None, :]
+    scores = tl.where(mask, scores, 0.0)
+
     # --- END OF STUDENT IMPLEMENTATION ---
 
     # --- STUDENT IMPLEMENTATION REQUIRED: P3.OUTPUT.COMBINE ---
     # Combine inter-chunk reads and intra-chunk weighted values.
-    # TODO: replace this assertion with your implementation.
-    tl.static_assert(False, "P3.OUTPUT.COMBINE: implement this subpart")
+    out = inter + tl.dot(scores, v)
     # --- END OF STUDENT IMPLEMENTATION ---
+
+    # problem 3.4
+    # current state still depends on previous state even if we chunk (but it's just faster)
+    # between chunks, the output calculations are all independent so each chunk can run its own independent program
 
     tl.store(tile_ptrs(Out, batch_head * seq_len, rows, value_offsets, VALUE_DIM), out.to(Out.dtype.element_ty))
 

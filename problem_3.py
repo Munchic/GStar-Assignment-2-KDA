@@ -73,7 +73,7 @@ def _chunk_output_forward(
     inter = tl.zeros([CHUNK, BLOCK_V], tl.float32)
     scores = tl.zeros([CHUNK, CHUNK], tl.float32)
 
-    for key_block in range(HEAD_DIM // BLOCK_K):
+    for key_block in tl.range(HEAD_DIM // BLOCK_K, num_stages=1):
         key_offsets = key_block * BLOCK_K + tl.arange(0, BLOCK_K)
         q = tl.load(tile_ptrs(Q, batch_head * seq_len, rows, key_offsets, HEAD_DIM)) * scale
         k = tl.load(tile_ptrs(K, batch_head * seq_len, rows, key_offsets, HEAD_DIM))

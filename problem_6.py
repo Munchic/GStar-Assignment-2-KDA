@@ -38,8 +38,10 @@ def triangular_inverse(lower, CHUNK: tl.constexpr):
     for r in range(1, INVERSE_BLOCK):
         # --- STUDENT IMPLEMENTATION REQUIRED: P6.INVERSE.SUBSTITUTE ---
         # Forward-substitute row r in every diagonal block. Update inverse [C,C].
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P6.INVERSE.SUBSTITUTE: implement this subpart")
+        row_mask = offsets % INVERSE_BLOCK == r
+        col_mask = offsets % INVERSE_BLOCK < r
+        mask = row_mask[:, None] & col_mask[None, :] & same_block
+        inverse = tl.where(mask, -tl.dot(block_lower, inverse), inverse)
         # --- END OF STUDENT IMPLEMENTATION ---
 
     for level in tl.static_range(6):
@@ -49,8 +51,7 @@ def triangular_inverse(lower, CHUNK: tl.constexpr):
 
             # --- STUDENT IMPLEMENTATION REQUIRED: P6.INVERSE.MERGE ---
             # Apply the lower-left block inverse identity. Update inverse only in lower_left.
-            # TODO: replace this assertion with your implementation.
-            tl.static_assert(False, "P6.INVERSE.MERGE: implement this subpart")
+            inverse = tl.where(lower_left, -tl.dot(tl.dot(inverse, lower), inverse), inverse)
             # --- END OF STUDENT IMPLEMENTATION ---
 
     return inverse
@@ -77,14 +78,13 @@ def _chunk_wy_representation(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P6.WY.GRAM ---
         # Accumulate beta-weighted key Gram matrix across key tiles.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P6.WY.GRAM: implement this subpart")
+        lower += beta[:, None] * tl.dot(k, k.trans())
         # --- END OF STUDENT IMPLEMENTATION ---
 
     # --- STUDENT IMPLEMENTATION REQUIRED: P6.WY.STRICT ---
     # Finish L with STRICT causality.
-    # TODO: replace this assertion with your implementation.
-    tl.static_assert(False, "P6.WY.STRICT: implement this subpart")
+    mask = chunk_offsets[:, None] > chunk_offsets[None, :]
+    lower = tl.where(mask, lower, 0.0)
     # --- END OF STUDENT IMPLEMENTATION ---
 
     # A = (I + L)^{-1} for the strictly lower triangular L
@@ -98,8 +98,7 @@ def _chunk_wy_representation(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P6.WY.W ---
         # Set w [C,BLOCK_K] using A and beta-weighted keys.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P6.WY.W: implement this subpart")
+        w = tl.dot(inverse, beta[:, None] * k)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(W, batch_head * seq_len, rows, key_offsets, HEAD_DIM), w.to(W.dtype.element_ty))
@@ -110,8 +109,7 @@ def _chunk_wy_representation(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P6.WY.U ---
         # Set u [C,BLOCK_V] using A and beta-weighted values.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P6.WY.U: implement this subpart")
+        u = tl.dot(inverse, beta[:, None] * v)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(U, batch_head * seq_len, rows, value_offsets, VALUE_DIM), u.to(U.dtype.element_ty))
@@ -133,7 +131,7 @@ def _chunk_state_forward(
     state_row_base = batch_head * (num_chunks + 1) * HEAD_DIM
     state = tl.load(tile_ptrs(States, state_row_base, key_offsets, value_offsets, VALUE_DIM))
 
-    for chunk in range(num_chunks):
+    for chunk in tl.range(num_chunks, num_stages=1):
         rows = chunk * CHUNK + chunk_offsets
         k = tl.load(tile_ptrs(K, batch_head * seq_len, rows, key_offsets, HEAD_DIM))
         w = tl.load(tile_ptrs(W, batch_head * seq_len, rows, key_offsets, HEAD_DIM))
@@ -141,16 +139,14 @@ def _chunk_state_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P6.STATE.PSEUDO ---
         # Set pseudo_values [C,BLOCK_V] from u, w and the entry state.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P6.STATE.PSEUDO: implement this subpart")
+        pseudo_values = u - tl.dot(w, state)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(PseudoValues, batch_head * seq_len, rows, value_offsets, VALUE_DIM), pseudo_values.to(PseudoValues.dtype.element_ty))
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P6.STATE.UPDATE ---
         # Advance the boundary using K.T @ pseudo_values.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P6.STATE.UPDATE: implement this subpart")
+        state += tl.dot(k.trans(), pseudo_values)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(States, state_row_base + (chunk + 1) * HEAD_DIM, key_offsets, value_offsets, VALUE_DIM), state)

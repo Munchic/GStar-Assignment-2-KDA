@@ -54,26 +54,22 @@ def _recurrent_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P7.RECURRENT.DECAY ---
         # Apply scalar forgetting BEFORE prediction.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P7.RECURRENT.DECAY: implement this subpart")
+        state = tl.exp(gate) * state
         # --- END OF STUDENT IMPLEMENTATION ---
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P7.RECURRENT.RESIDUAL ---
         # Set error [BLOCK_V] using the decayed previous state.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P7.RECURRENT.RESIDUAL: implement this subpart")
+        u = beta * (v - tl.sum(state * k[:, None], axis=0))
         # --- END OF STUDENT IMPLEMENTATION ---
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P7.RECURRENT.WRITE ---
         # Apply the beta-weighted rank-one correction.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P7.RECURRENT.WRITE: implement this subpart")
+        state += k[:, None] * u[None, :]
         # --- END OF STUDENT IMPLEMENTATION ---
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P7.RECURRENT.READ ---
         # Set out using the updated state.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P7.RECURRENT.READ: implement this subpart")
+        out = tl.sum(q[:, None] * state, axis=0)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(out_ptrs + t * VALUE_DIM, out.to(Out.dtype.element_ty))
@@ -95,8 +91,11 @@ def _chunk_wy_representation(
 
     # --- STUDENT IMPLEMENTATION REQUIRED: P7.WY.GATES ---
     # Load scalar log gates; set inclusive gate_cumsum [C] and strictly causal decay [C,C]. Mask differences before exp.
-    # TODO: replace this assertion with your implementation.
-    tl.static_assert(False, "P7.WY.GATES: implement this subpart")
+    gate = tl.load(Gate + batch_head * seq_len + rows).to(tl.float32)
+    gate_cumsum = tl.cumsum(gate, axis=0)
+    mask = chunk_offsets[:, None] > chunk_offsets[None, :] 
+    gate_diff = gate_cumsum[:, None] - gate_cumsum[None, :]
+    decay = tl.exp(tl.where(mask, gate_diff, float("-inf")))
     # --- END OF STUDENT IMPLEMENTATION ---
 
     # L = tril(diag(beta) (K K^T ⊙ decay), -1)
@@ -108,14 +107,12 @@ def _chunk_wy_representation(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P7.WY.GRAM ---
         # Accumulate beta-weighted key Gram matrix across key tiles.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P7.WY.GRAM: implement this subpart")
+        lower += beta[:, None] * tl.dot(k, k.trans())
         # --- END OF STUDENT IMPLEMENTATION ---
 
     # --- STUDENT IMPLEMENTATION REQUIRED: P7.WY.STRICT ---
     # Finish L with STRICT causality and relative scalar decay.
-    # TODO: replace this assertion with your implementation.
-    tl.static_assert(False, "P7.WY.STRICT: implement this subpart")
+    lower = tl.where(mask, lower * decay, 0.0)
     # --- END OF STUDENT IMPLEMENTATION ---
 
     # A = (I + L)^{-1} for the strictly lower triangular L
@@ -129,8 +126,8 @@ def _chunk_wy_representation(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P7.WY.W ---
         # Set w [C,BLOCK_K] using A and beta-weighted entry-decayed keys.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P7.WY.W: implement this subpart")
+        k_start = k * tl.exp(gate_cumsum)[:, None]
+        w = tl.dot(inverse, beta[:, None] * k_start)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(W, batch_head * seq_len, rows, key_offsets, HEAD_DIM), w.to(W.dtype.element_ty))
@@ -141,8 +138,7 @@ def _chunk_wy_representation(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P7.WY.U ---
         # Set u [C,BLOCK_V] using A and beta-weighted values.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P7.WY.U: implement this subpart")
+        u = tl.dot(inverse, beta[:, None] * v)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(U, batch_head * seq_len, rows, value_offsets, VALUE_DIM), u.to(U.dtype.element_ty))

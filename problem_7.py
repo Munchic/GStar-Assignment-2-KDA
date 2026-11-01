@@ -160,14 +160,14 @@ def _chunk_state_forward(
     state_row_base = batch_head * (num_chunks + 1) * HEAD_DIM
     state = tl.load(tile_ptrs(States, state_row_base, key_offsets, value_offsets, VALUE_DIM))
 
-    for chunk in range(num_chunks):
+    for chunk in tl.range(num_chunks, num_stages=1):
         rows = chunk * CHUNK + chunk_offsets
         gate = tl.load(Gate + batch_head * seq_len + rows).to(tl.float32)
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P7.STATE.PREFIX ---
         # Set inclusive gate_cumsum [C] and scalar chunk_decay.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P7.STATE.PREFIX: implement this subpart")
+        gate_cumsum = tl.cumsum(gate, axis=0)
+        chunk_decay = tl.exp(tl.sum(gate))
         # --- END OF STUDENT IMPLEMENTATION ---
 
         k = tl.load(tile_ptrs(K, batch_head * seq_len, rows, key_offsets, HEAD_DIM))
@@ -176,16 +176,15 @@ def _chunk_state_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P7.STATE.PSEUDO ---
         # Set pseudo_values [C,BLOCK_V] from u, w and the entry state.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P7.STATE.PSEUDO: implement this subpart")
+        pseudo_values = u - tl.dot(w, state)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(PseudoValues, batch_head * seq_len, rows, value_offsets, VALUE_DIM), pseudo_values.to(PseudoValues.dtype.element_ty))
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P7.STATE.UPDATE ---
         # Decay entry state and add exit-decayed corrected writes.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P7.STATE.UPDATE: implement this subpart")
+        k_end = tl.exp((tl.sum(gate) - gate_cumsum)[:, None]) * k
+        state = chunk_decay * state + tl.dot(k_end.trans(), pseudo_values)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(States, state_row_base + (chunk + 1) * HEAD_DIM, key_offsets, value_offsets, VALUE_DIM), state)
@@ -207,15 +206,19 @@ def _chunk_output_forward(
 
     # --- STUDENT IMPLEMENTATION REQUIRED: P7.OUTPUT.GATES ---
     # Set chunk-local prefixes and INCLUSIVE relative decay; mask before exponentiation.
-    # TODO: replace this assertion with your implementation.
-    tl.static_assert(False, "P7.OUTPUT.GATES: implement this subpart")
+    gate = tl.load(Gate + batch_head * seq_len + rows).to(tl.float32)
+    gate_cumsum = tl.cumsum(gate, axis=0)
+    mask = chunk_offsets[:, None] >= chunk_offsets[None, :]
+    diff = gate_cumsum[:, None] - gate_cumsum[None, :]
+    decay = tl.exp(tl.where(mask, diff, float("-inf")))
+
     # --- END OF STUDENT IMPLEMENTATION ---
 
     pseudo_values = tl.load(tile_ptrs(PseudoValues, batch_head * seq_len, rows, value_offsets, VALUE_DIM))
     inter = tl.zeros([CHUNK, BLOCK_V], tl.float32)
     scores = tl.zeros([CHUNK, CHUNK], tl.float32)
 
-    for key_block in range(HEAD_DIM // BLOCK_K):
+    for key_block in tl.range(HEAD_DIM // BLOCK_K, num_stages=1):
         key_offsets = key_block * BLOCK_K + tl.arange(0, BLOCK_K)
         q = tl.load(tile_ptrs(Q, batch_head * seq_len, rows, key_offsets, HEAD_DIM)) * scale
         k = tl.load(tile_ptrs(K, batch_head * seq_len, rows, key_offsets, HEAD_DIM))
@@ -223,15 +226,23 @@ def _chunk_output_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P7.OUTPUT.PRODUCTS ---
         # Accumulate entry-decayed inter reads and un-gated local scores.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P7.OUTPUT.PRODUCTS: implement this subpart")
+        q_start = q * tl.exp(gate_cumsum)[:, None]
+        inter += tl.dot(q_start, state)
+        scores += tl.dot(q, k.trans())
         # --- END OF STUDENT IMPLEMENTATION ---
 
     # --- STUDENT IMPLEMENTATION REQUIRED: P7.OUTPUT.COMBINE ---
     # Apply relative decay to scores; combine inter and corrected local writes.
-    # TODO: replace this assertion with your implementation.
-    tl.static_assert(False, "P7.OUTPUT.COMBINE: implement this subpart")
+    scores = scores * decay
+    out = inter + tl.dot(scores, pseudo_values)
     # --- END OF STUDENT IMPLEMENTATION ---
+
+    # problem 7.4
+    # we decay first before writing the gate forgets past memory
+    # if we writen then decay, the new write will be multiplied by e^{g_t}
+    # so we get a different recurrence 
+    # i guess mathematically it doesn't matter but for the sake of semantics
+    # past memories forget, what we observe now is compelete (undecayed)
 
     tl.store(tile_ptrs(Out, batch_head * seq_len, rows, value_offsets, VALUE_DIM), out.to(Out.dtype.element_ty))
 

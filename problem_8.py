@@ -55,26 +55,23 @@ def _recurrent_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P8.RECURRENT.DECAY ---
         # Apply channel-wise forgetting BEFORE prediction.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P8.RECURRENT.DECAY: implement this subpart")
+        decay_state = tl.exp(gate)[:, None] * state
         # --- END OF STUDENT IMPLEMENTATION ---
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P8.RECURRENT.RESIDUAL ---
         # Set error [BLOCK_V] using the decayed previous state.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P8.RECURRENT.RESIDUAL: implement this subpart")
+        v_pred = tl.sum(decay_state * k[:, None], axis=0)
+        u = beta * (v - v_pred)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P8.RECURRENT.WRITE ---
         # Apply the beta-weighted rank-one correction.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P8.RECURRENT.WRITE: implement this subpart")
+        state = decay_state + k[:, None] * u[None, :]
         # --- END OF STUDENT IMPLEMENTATION ---
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P8.RECURRENT.READ ---
         # Set out using the updated state.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P8.RECURRENT.READ: implement this subpart")
+        out = tl.sum(q[:, None] * state, axis=0)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(out_ptrs + t * VALUE_DIM, out.to(Out.dtype.element_ty))
@@ -89,8 +86,10 @@ def gated_scores_diagonal(left, key, left_cumsum, key_cumsum):
 
     # --- STUDENT IMPLEMENTATION REQUIRED: P8.DIAGONAL.SCORES ---
     # Return [SUB,SUB] direct FP32 gated scores. Clamp differences at zero before exp; caller masks future entries.
-    # TODO: replace this assertion with your implementation.
-    tl.static_assert(False, "P8.DIAGONAL.SCORES: implement this subpart")
+    diff = left_cumsum[:, None, :] - key_cumsum[None, :, :]        # b_left[r,k] - b_key[s,k]
+    exp  = tl.exp(tl.minimum(diff, 0.0))                            # clamp at zero
+    out  = tl.sum(left[:, None, :] * key[None, :, :] * exp, axis=2) # [SUB, SUB]
+    return out
     # --- END OF STUDENT IMPLEMENTATION ---
 
 
@@ -125,23 +124,30 @@ def _chunk_kernel_matrix(
                 else:
                     # --- STUDENT IMPLEMENTATION REQUIRED: P8.SCORES.ANCHOR ---
                     # For i > j, factor relative decay around anchor; accumulate the [SUB,SUB] dot.
-                    # TODO: replace this assertion with your implementation.
-                    tl.static_assert(False, "P8.SCORES.ANCHOR: implement this subpart")
+                    diff_left = left_cumsum - anchor[None, :]  
+                    exp_left  = tl.exp(tl.minimum(diff_left, 0.0))
+                    left_tilde = left * exp_left
+                    
+                    diff_key =  anchor[None, :] - key_cumsum
+                    exp_key = tl.exp(tl.minimum(diff_key, 0.0))
+                    key_tilde = k * exp_key
+                    
+                    block += tl.dot(left_tilde, key_tilde.trans())
                     # --- END OF STUDENT IMPLEMENTATION ---
 
             if i == j:
                 if STRICT:
                     # --- STUDENT IMPLEMENTATION REQUIRED: P8.SCORES.STRICT ---
                     # Strict mask for key-key WY scores.
-                    # TODO: replace this assertion with your implementation.
-                    tl.static_assert(False, "P8.SCORES.STRICT: implement this subpart")
+                    mask = sub_offsets[:, None] > sub_offsets[None, :]
+                    block = tl.where(mask, block, 0.0)
                     # --- END OF STUDENT IMPLEMENTATION ---
 
                 else:
                     # --- STUDENT IMPLEMENTATION REQUIRED: P8.SCORES.INCLUSIVE ---
                     # Inclusive mask for query-key output scores.
-                    # TODO: replace this assertion with your implementation.
-                    tl.static_assert(False, "P8.SCORES.INCLUSIVE: implement this subpart")
+                    mask = sub_offsets[:, None] >= sub_offsets[None, :]
+                    block = tl.where(mask, block, 0.0)
                     # --- END OF STUDENT IMPLEMENTATION ---
 
             tl.store(tile_ptrs(Out, batch_head * seq_len, left_rows, j * SUB + sub_offsets, CHUNK), block)

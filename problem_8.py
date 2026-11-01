@@ -150,6 +150,14 @@ def _chunk_kernel_matrix(
                     block = tl.where(mask, block, 0.0)
                     # --- END OF STUDENT IMPLEMENTATION ---
 
+                # problem 8.3
+                # the unsafe factorization is bcs when we exponentiate first before dividing
+                # the exponent can overflow (esp FP32 and lower) bcs e^{-b_ud} where b_ud <= 0 can overflow
+                # anchor is picked as last token of key tile, then:
+                # on the query side, it is later than the anchor, so b - a <= 0 (safe)
+                # on the key side, it is ealier than the anchor, so a - b <= 0 (safe)
+                # then e^{<0}*e^{<0} <= 1 => no overflow
+
             tl.store(tile_ptrs(Out, batch_head * seq_len, left_rows, j * SUB + sub_offsets, CHUNK), block)
 
 

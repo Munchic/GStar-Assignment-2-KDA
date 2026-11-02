@@ -154,6 +154,15 @@ def _chunk_output_forward(
         out += tl.dot(q_start, state)
         # --- END OF STUDENT IMPLEMENTATION ---
 
+    # problem 9.4
+    # in terms of dependencies, the WY can be calculated without knowing entry state
+    # while the outputs and next state must wait for the entry state (bcs of query and pseudo values needing entry state)
+    # for segmented execution for an interior token, we only need the previous segment's final state
+    # which we can use as the current segment's initial state to do decays/outputs and check against the chunking way
+    # running problem_9.4.py, i can verify the chunk execution correctedness:
+    # out max_abs = 1.821e-05
+    # final state max_abs = 8.265e-05
+    
     tl.store(tile_ptrs(Out, batch_head * seq_len, rows, value_offsets, VALUE_DIM), out.to(Out.dtype.element_ty))
 
 

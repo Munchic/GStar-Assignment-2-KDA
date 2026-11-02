@@ -41,8 +41,8 @@ def _chunk_wy_representation(
 
     # --- STUDENT IMPLEMENTATION REQUIRED: P9.WY.LOWER ---
     # Load the supplied STRICT key-key matrix and beta-weight rows to set lower.
-    # TODO: replace this assertion with your implementation.
-    tl.static_assert(False, "P9.WY.LOWER: implement this subpart")
+    G_kk = tl.load(tile_ptrs(KernelMatrix, batch_head * seq_len, rows, chunk_offsets, CHUNK)).to(tl.float32)
+    lower = beta[:, None] * G_kk
     # --- END OF STUDENT IMPLEMENTATION ---
 
     inverse = triangular_inverse(lower, CHUNK)
@@ -56,8 +56,8 @@ def _chunk_wy_representation(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P9.WY.W ---
         # Set w using A, beta and channel-wise entry-decayed keys.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P9.WY.W: implement this subpart")
+        k_start = k * tl.exp(gate_cumsum)
+        w = tl.dot(inverse, beta[:, None] * k_start)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(W, batch_head * seq_len, rows, key_offsets, HEAD_DIM), w.to(W.dtype.element_ty))
@@ -68,8 +68,7 @@ def _chunk_wy_representation(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P9.WY.U ---
         # Set u using A and beta-weighted values.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P9.WY.U: implement this subpart")
+        u = tl.dot(inverse, beta[:, None] * v)
         # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(U, batch_head * seq_len, rows, value_offsets, VALUE_DIM), u.to(U.dtype.element_ty))
@@ -100,8 +99,7 @@ def _chunk_state_forward(
 
             # --- STUDENT IMPLEMENTATION REQUIRED: P9.STATE.REDUCE ---
             # Subtract this key tile contribution from pseudo_values. Finish ALL key tiles before the update loop.
-            # TODO: replace this assertion with your implementation.
-            tl.static_assert(False, "P9.STATE.REDUCE: implement this subpart")
+            pseudo_values -= tl.dot(w, state)
             # --- END OF STUDENT IMPLEMENTATION ---
 
         tl.store(tile_ptrs(PseudoValues, batch_head * seq_len, rows, value_offsets, VALUE_DIM), pseudo_values.to(PseudoValues.dtype.element_ty))
@@ -115,8 +113,8 @@ def _chunk_state_forward(
 
             # --- STUDENT IMPLEMENTATION REQUIRED: P9.STATE.UPDATE ---
             # Decay this entry-state tile and add exit-decayed corrected writes.
-            # TODO: replace this assertion with your implementation.
-            tl.static_assert(False, "P9.STATE.UPDATE: implement this subpart")
+            k_end = k * tl.exp(chunk_decay - gate_cumsum)
+            state = tl.exp(chunk_decay)[:, None] * state + tl.dot(k_end.trans(), pseudo_values)
             # --- END OF STUDENT IMPLEMENTATION ---
 
             tl.store(tile_ptrs(States, state_row_base + HEAD_DIM, key_offsets, value_offsets, VALUE_DIM), state)
@@ -141,11 +139,10 @@ def _chunk_output_forward(
 
     # --- STUDENT IMPLEMENTATION REQUIRED: P9.OUTPUT.LOCAL ---
     # Set out from the already-scaled inclusive scores and pseudo-values.
-    # TODO: replace this assertion with your implementation.
-    tl.static_assert(False, "P9.OUTPUT.LOCAL: implement this subpart")
+    out = tl.dot(scores, pseudo_values)
     # --- END OF STUDENT IMPLEMENTATION ---
 
-    for key_block in range(HEAD_DIM // BLOCK_K):
+    for key_block in tl.range(HEAD_DIM // BLOCK_K, num_stages=1):
         key_offsets = key_block * BLOCK_K + tl.arange(0, BLOCK_K)
         q = tl.load(tile_ptrs(Q, batch_head * seq_len, rows, key_offsets, HEAD_DIM)) * scale
         gate_cumsum = tl.load(tile_ptrs(GateCumsum, batch_head * seq_len, rows, key_offsets, HEAD_DIM))
@@ -153,8 +150,8 @@ def _chunk_output_forward(
 
         # --- STUDENT IMPLEMENTATION REQUIRED: P9.OUTPUT.ENTRY ---
         # Add the channel-decayed entry-state read. q already includes scale.
-        # TODO: replace this assertion with your implementation.
-        tl.static_assert(False, "P9.OUTPUT.ENTRY: implement this subpart")
+        q_start = q * tl.exp(gate_cumsum)
+        out += tl.dot(q_start, state)
         # --- END OF STUDENT IMPLEMENTATION ---
 
     tl.store(tile_ptrs(Out, batch_head * seq_len, rows, value_offsets, VALUE_DIM), out.to(Out.dtype.element_ty))
@@ -195,7 +192,7 @@ def _chunk_states(key, w, u, gate_cumsum, initial_state):
     grid = (value_dim // BLOCK_V, batch_size * num_heads)
     _chunk_state_forward[grid](
         key, w, u, gate_cumsum, states, pseudo_values, seq_len, num_chunks,
-        HEAD_DIM=head_dim, VALUE_DIM=value_dim, CHUNK=CHUNK_SIZE, BLOCK_K=BLOCK_K, BLOCK_V=BLOCK_V, num_stages=2,
+        HEAD_DIM=head_dim, VALUE_DIM=value_dim, CHUNK=CHUNK_SIZE, BLOCK_K=BLOCK_K, BLOCK_V=BLOCK_V, num_stages=1,
     )
 
     return states, pseudo_values
